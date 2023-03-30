@@ -3,6 +3,7 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3_assets from 'aws-cdk-lib/aws-s3-assets';
 import { Construct } from 'constructs';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import { SatisfactoryDedicatedStackProps } from './satisfactoryDedicatedStackProps';
 
 export class SatisfactoryDedicatedStack extends Stack {
@@ -44,7 +45,7 @@ export class SatisfactoryDedicatedStack extends Stack {
         ],
         
     });
-
+    server.role.addManagedPolicy(iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonSSMManagedInstanceCore'));
     // Create a bucket for the save files
     const bucket = new s3.Bucket(this, `${props?.prefix}SatisfactoryBucket`, {
         bucketName: props?.bucketName
@@ -58,8 +59,8 @@ export class SatisfactoryDedicatedStack extends Stack {
     server.userData.addCommands('sudo apt-get install unzip -y');
     server.userData.addCommands(
         'curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"',
-        'unzip awscliv2.zip',
-        './aws/install');
+        'unzip awscliv2.zip');
+    server.userData.addCommands('sudo ./aws/install');
 
     // install steamcmd on the server
     // https://developer.valvesoftware.com/wiki/SteamCMD?__cf_chl_jschl_tk__=pmd_WNQPOiK18.h0rf16RCYrARI2s8_84hUMwT.7N1xHYcs-1635248050-0-gqNtZGzNAiWjcnBszQiR#Linux
@@ -69,10 +70,12 @@ export class SatisfactoryDedicatedStack extends Stack {
         'sudo add-apt-repository multiverse',
         'sudo apt install software-properties-common',
         'sudo dpkg --add-architecture i386',
-        'sudo apt update',
-        'sudo apt install -y unzip lib32gcc1 steamcmd',
-        'su - ubuntu -c "/usr/games/steamcmd steamcmd +force_install_dir "/home/ubuntu/satisfactory" +login anonymous +app_update 1690800 validate +quit"',
-    );
+        'sudo apt update');
+    server.userData.addCommands(`echo steam steam/question 'select' "I AGREE" | sudo debconf-set-selections`);
+    server.userData.addCommands(`echo steam steam/license note '' | sudo debconf-set-selections`);
+    server.userData.addCommands('sudo apt install -y unzip lib32gcc1 steamcmd');
+    server.userData.addCommands('mkdir /home/ubuntu/satisfactory');
+    server.userData.addCommands('su - ubuntu -c "/usr/games/steamcmd +force_install_dir "/home/ubuntu/SatisfactoryDedicatedServer" +login anonymous +app_update 1690800 validate +quit"')
     
 
     //systemctl satisfactory.service
@@ -80,35 +83,51 @@ export class SatisfactoryDedicatedStack extends Stack {
         path: './lib/scripts/satisfactory.service.sh',
       });
       satisfactoryServiceScript.grantRead(server);
-        server.userData.addS3DownloadCommand({
+        
+      
+      const serverSatisfactoryServicePath = server.userData.addS3DownloadCommand({
         bucket: satisfactoryServiceScript.bucket,
-        bucketKey: satisfactoryServiceScript.s3ObjectKey,
-        localFile: '/tmp/satisfactory.service.sh',
+        bucketKey: satisfactoryServiceScript.s3ObjectKey
         });
-        server.userData.addCommands('sudo chmod +x /tmp/satisfactory.service.sh');
-        server.userData.addCommands('sudo /tmp/satisfactory.service.sh');
-        server.userData.addCommands('sudo systemctl enable satisfactory.service');
-        server.userData.addCommands('sudo systemctl start satisfactory.service');
-        server.userData.addCommands('sudo systemctl status satisfactory.service');
+
+        server.userData.addCommands(`sudo chmod +x ${serverSatisfactoryServicePath}`);
+        server.userData.addCommands(`sudo ${serverSatisfactoryServicePath}`);
+        server.userData.addCommands('sudo systemctl enable satisfactory');
+        server.userData.addCommands('sudo systemctl start satisfactory');
+        server.userData.addCommands('sudo systemctl status satisfactory');
 
         
         const autoShutdownServiceScript = new s3_assets.Asset(this, `${props?.prefix}ShutdownSystemService`, {
             path: './lib/scripts/auto-shutdown.service.sh',
           });
           autoShutdownServiceScript.grantRead(server);
-            server.userData.addS3DownloadCommand({
+
+          const serverautoShutdownServicePath = server.userData.addS3DownloadCommand({
             bucket: autoShutdownServiceScript.bucket,
-            bucketKey: autoShutdownServiceScript.s3ObjectKey,
-            localFile: '/tmp/auto-shutdown.service.sh',
+            bucketKey: autoShutdownServiceScript.s3ObjectKey
             });
-            server.userData.addCommands('sudo chmod +x /tmp/auto-shutdown.service.sh');
-            server.userData.addCommands('sudo /tmp/auto-shutdown.service.sh');
+            server.userData.addCommands(`sudo chmod +x ${serverautoShutdownServicePath}`);
+            
+            const autoShutdownJobScript = new s3_assets.Asset(this, `${props?.prefix}autoShutdownJobScript`, {
+                path: './lib/scripts/auto-shutdown.job.sh',
+              });
+              autoShutdownServiceScript.grantRead(server);
+    
+              const serverautoShutdownJobScriptPath = server.userData.addS3DownloadCommand({
+                bucket: autoShutdownJobScript.bucket,
+                bucketKey: autoShutdownJobScript.s3ObjectKey
+                });
+
+
+
+            server.userData.addCommands(`sudo chmod +x ${serverautoShutdownServicePath}`);
+            server.userData.addCommands(`sudo ${serverautoShutdownServicePath}`);
             server.userData.addCommands('sudo systemctl enable auto-shutdown.service');
             server.userData.addCommands('sudo systemctl start auto-shutdown.service');
             server.userData.addCommands('sudo systemctl status auto-shutdown.service');
             server.userData.addCommands('sudo systemctl status auto-shutdown.service');
             server.userData.addCommands('chmod +x /home/ubuntu/auto-shutdown.sh');
             server.userData.addCommands('chown ubuntu:ubuntu /home/ubuntu/auto-shutdown.sh');
-            server.userData.addCommands(`su - ubuntu -c "crontab -l -e ubuntu | { cat; echo \"*/5 * * * * /usr/local/bin/aws s3 sync /home/ubuntu/.config/Epic/FactoryGame/Saved/SaveGames/server s3://${bucket.bucketName}/ \"; } | crontab -"`);
+            server.userData.addCommands(`su - ubuntu -c "crontab -l -e ubuntu | { cat; echo \"*/5 * * * * /usr/local/aws-cli/v2/current/bin/aws s3 sync /home/ubuntu/.config/Epic/FactoryGame/Saved/SaveGames/server s3://${bucket.bucketName}/ \"; } | crontab -"`);
   }
 }
